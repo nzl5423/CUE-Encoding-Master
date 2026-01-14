@@ -9,6 +9,7 @@ export enum FileStatus {
 export interface CueFile {
   id: string;
   name: string;
+  path: string; // Relative path for folder structure reconstruction
   size: number;
   lastModified: number;
   originalRaw: ArrayBuffer;

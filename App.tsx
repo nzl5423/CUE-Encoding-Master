@@ -12,7 +12,8 @@ import {
   ChevronDown,
   Archive,
   CheckCircle2,
-  Languages
+  Languages,
+  FolderOpen
 } from 'lucide-react';
 import JSZip from 'jszip';
 import { CueFile, FileStatus, SUPPORTED_ENCODINGS } from './types';
@@ -26,11 +27,39 @@ const App: React.FC = () => {
   const [shouldConvertToSimplified, setShouldConvertToSimplified] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const processFiles = async (selectedFiles: File[]) => {
-    if (selectedFiles.length === 0) return;
+  // Recursively scan entries from DataTransferItem
+  const scanEntry = async (entry: any, path: string = ""): Promise<{ file: File, path: string }[]> => {
+    if (entry.isFile) {
+      if (entry.name.toLowerCase().endsWith('.cue')) {
+        const file = await new Promise<File>((resolve) => entry.file(resolve));
+        return [{ file, path: path + entry.name }];
+      }
+      return [];
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      const entries = await new Promise<any[]>((resolve) => {
+        const allEntries: any[] = [];
+        const readBatch = () => {
+          reader.readEntries((batch: any[]) => {
+            if (batch.length === 0) {
+              resolve(allEntries);
+            } else {
+              allEntries.push(...batch);
+              readBatch();
+            }
+          });
+        };
+        readBatch();
+      });
+      const results = await Promise.all(entries.map(e => scanEntry(e, path + entry.name + "/")));
+      return results.flat();
+    }
+    return [];
+  };
 
+  const processFileEntries = async (entries: { file: File, path: string }[]) => {
     const newFiles: CueFile[] = await Promise.all(
-      selectedFiles.map(async (file: File) => {
+      entries.map(async ({ file, path }) => {
         const arrayBuffer = await file.arrayBuffer();
         const initialText = decodeBuffer(arrayBuffer, 'utf-8');
         const looksGarbled = isLikelyGarbled(initialText);
@@ -38,6 +67,7 @@ const App: React.FC = () => {
         return {
           id: Math.random().toString(36).substring(2, 11),
           name: file.name,
+          path: path,
           size: file.size,
           lastModified: file.lastModified,
           originalRaw: arrayBuffer,
@@ -54,8 +84,26 @@ const App: React.FC = () => {
 
   const onFilesSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFiles = Array.from(e.target.files || []) as File[];
-    await processFiles(selectedFiles);
+    const entries = selectedFiles.map(f => ({ file: f, path: f.name }));
+    await processFileEntries(entries);
     if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    
+    const items = Array.from(e.dataTransfer.items);
+    // Fix: Explicitly cast to any to resolve "webkitGetAsEntry does not exist on type unknown"
+    const entryPromises = items
+      .map(item => (item as any).webkitGetAsEntry())
+      .filter(entry => entry !== null)
+      .map(entry => scanEntry(entry));
+    
+    const allFileInfos = (await Promise.all(entryPromises)).flat();
+    if (allFileInfos.length > 0) {
+      await processFileEntries(allFileInfos);
+    }
   };
 
   const fixFile = async (fileId: string, manualEncoding?: string, forceConversion?: boolean) => {
@@ -64,7 +112,7 @@ const App: React.FC = () => {
     const file = files.find(f => f.id === fileId);
     if (!file) return;
 
-    await new Promise(r => setTimeout(r, 50)); // Feedback delay
+    await new Promise(r => setTimeout(r, 50)); 
 
     try {
       let result;
@@ -77,7 +125,6 @@ const App: React.FC = () => {
         result = autoDetectEncoding(file.originalRaw);
       }
 
-      // Handle conversion if enabled
       let finalText = result.text;
       const doConvert = forceConversion !== undefined ? forceConversion : shouldConvertToSimplified;
       if (doConvert) {
@@ -129,14 +176,15 @@ const App: React.FC = () => {
 
       fixedFiles.forEach(file => {
         const contentWithBom = new Blob([BOM, file.fixedContent], { type: 'text/plain;charset=utf-8' });
-        zip.file(file.name, contentWithBom);
+        // Use the stored relative path to maintain folder structure
+        zip.file(file.path, contentWithBom);
       });
 
       const blob = await zip.generateAsync({ type: 'blob' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `Fixed_CUE_Simplified_${new Date().toISOString().slice(0,10)}.zip`;
+      link.download = `CUE_Fixed_Structure_${new Date().toISOString().slice(0,10)}.zip`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -158,7 +206,7 @@ const App: React.FC = () => {
           <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">CUE 编码助手</h1>
         </div>
         <p className="text-slate-500 max-w-2xl mx-auto">
-          本地极速修复乱码。现已集成 <b>OpenCC</b>，支持繁体自动转简体，完美兼容 Foobar2000。
+          极速本地修复。支持<b>拖入多个文件夹</b>，保留原目录结构并自动转为简体中文。
         </p>
       </header>
 
@@ -170,18 +218,13 @@ const App: React.FC = () => {
           onClick={() => fileInputRef.current?.click()}
           onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
           onDragLeave={() => setIsDragging(false)}
-          onDrop={async (e) => {
-            e.preventDefault();
-            setIsDragging(false);
-            const droppedFiles = (Array.from(e.dataTransfer.files) as File[]).filter(f => f.name.toLowerCase().endsWith('.cue') || f.name.toLowerCase().endsWith('.txt'));
-            await processFiles(droppedFiles);
-          }}
+          onDrop={handleDrop}
         >
-          <input type="file" multiple accept=".cue,.txt" className="hidden" ref={fileInputRef} onChange={onFilesSelected} />
+          <input type="file" multiple accept=".cue" className="hidden" ref={fileInputRef} onChange={onFilesSelected} />
           <div className="flex flex-col items-center text-center">
-            <Upload className={`w-10 h-10 mb-3 ${isDragging ? 'text-indigo-600' : 'text-slate-400'}`} />
-            <h3 className="text-lg font-semibold text-slate-700">拖入 CUE 文件</h3>
-            <p className="text-sm text-slate-400 font-medium">支持批量转换，处理不设限</p>
+            <FolderOpen className={`w-10 h-10 mb-3 ${isDragging ? 'text-indigo-600' : 'text-slate-400'}`} />
+            <h3 className="text-lg font-semibold text-slate-700">拖入 CUE 文件或整个文件夹</h3>
+            <p className="text-sm text-slate-400 font-medium">自动保持文件夹层级，批量打包无限制</p>
           </div>
         </section>
 
@@ -189,9 +232,8 @@ const App: React.FC = () => {
           <>
             <div className="flex flex-wrap gap-4 justify-between items-center bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
               <div className="flex items-center space-x-4">
-                <span className="text-sm font-medium text-slate-500">{files.length} 个文件就绪</span>
+                <span className="text-sm font-medium text-slate-500">{files.length} 个 CUE 文件</span>
                 <div className="h-6 w-px bg-slate-200"></div>
-                {/* Simplified Conversion Toggle */}
                 <label className="flex items-center cursor-pointer group">
                   <div className="relative">
                     <input 
@@ -218,7 +260,7 @@ const App: React.FC = () => {
                   className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2 rounded-xl font-bold flex items-center gap-2 shadow-lg shadow-indigo-100 disabled:opacity-50"
                 >
                   {isProcessing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
-                  一键修复全部
+                  全部修复
                 </button>
                 <button 
                   onClick={downloadAll}
@@ -226,52 +268,48 @@ const App: React.FC = () => {
                   className="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2 rounded-xl font-bold flex items-center gap-2 shadow-lg shadow-emerald-100 disabled:opacity-50"
                 >
                   {isDownloading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Archive className="w-4 h-4" />}
-                  {isDownloading ? '打包中...' : '打包下载'}
+                  {isDownloading ? '打包中...' : '下载结构化 ZIP'}
                 </button>
               </div>
             </div>
 
-            <div className="space-y-4">
+            <div className="space-y-3">
               {files.map((file) => (
                 <div key={file.id} className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm hover:border-indigo-200 transition-colors">
                   <div className="p-4 flex items-center justify-between gap-4">
-                    <div className="flex items-center space-x-3 min-w-0">
-                      <div className={`p-2 rounded-lg ${file.status === FileStatus.FIXED ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}>
+                    <div className="flex items-center space-x-3 min-w-0 flex-1">
+                      <div className={`p-2 rounded-lg shrink-0 ${file.status === FileStatus.FIXED ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}>
                         <FileMusic className="w-5 h-5" />
                       </div>
-                      <div className="truncate">
-                        <h4 className="font-bold text-slate-800 truncate">{file.name}</h4>
+                      <div className="truncate flex-1">
+                        <h4 className="font-bold text-slate-800 truncate" title={file.path}>{file.name}</h4>
                         <div className="flex items-center gap-2 mt-1">
-                          {file.status === FileStatus.FIXED ? (
-                            <div className="flex gap-1.5">
-                              <span className="text-[10px] font-bold uppercase tracking-wider bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-md flex items-center gap-1">
-                                <ShieldCheck className="w-3 h-3" /> {file.detectedEncoding}
+                          <span className="text-[9px] text-slate-400 font-mono truncate max-w-[200px] bg-slate-50 px-1 rounded" title={file.path}>
+                            {file.path.split('/').slice(0, -1).join('/') || './'}
+                          </span>
+                          {file.status === FileStatus.FIXED && (
+                            <div className="flex gap-1.5 shrink-0">
+                              <span className="text-[9px] font-bold uppercase bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded flex items-center gap-1">
+                                <ShieldCheck className="w-2.5 h-2.5" /> {file.detectedEncoding}
                               </span>
-                              {shouldConvertToSimplified && (
-                                <span className="text-[10px] font-bold uppercase tracking-wider bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-md">
-                                  已转简体
-                                </span>
-                              )}
                             </div>
-                          ) : (
-                            <span className="text-[10px] text-slate-400 uppercase tracking-widest">等待修复</span>
                           )}
                         </div>
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 shrink-0">
                       <div className="relative group">
                         <select 
                           onChange={(e) => handleManualEncoding(file.id, e.target.value)}
-                          className="appearance-none bg-slate-50 border border-slate-200 text-slate-600 text-[11px] py-1.5 pl-3 pr-8 rounded-lg cursor-pointer hover:bg-slate-100 outline-none"
+                          className="appearance-none bg-slate-50 border border-slate-200 text-slate-600 text-[10px] py-1 pl-2 pr-6 rounded-lg cursor-pointer hover:bg-slate-100 outline-none"
                           value={file.status === FileStatus.FIXED ? file.detectedEncoding : 'auto'}
                         >
                           {SUPPORTED_ENCODINGS.map(enc => (
                             <option key={enc.value} value={enc.value}>{enc.label}</option>
                           ))}
                         </select>
-                        <ChevronDown className="w-3 h-3 absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                        <ChevronDown className="w-3 h-3 absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
                       </div>
                       
                       {file.status === FileStatus.FIXED ? (
@@ -279,7 +317,7 @@ const App: React.FC = () => {
                           <Download className="w-5 h-5" />
                         </button>
                       ) : (
-                        <button onClick={() => fixFile(file.id)} disabled={file.status === FileStatus.PROCESSING} className="px-4 py-2 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 rounded-xl text-sm font-bold transition-colors disabled:opacity-50">
+                        <button onClick={() => fixFile(file.id)} disabled={file.status === FileStatus.PROCESSING} className="px-3 py-1.5 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 rounded-xl text-xs font-bold transition-colors disabled:opacity-50">
                           {file.status === FileStatus.PROCESSING ? '处理中' : '修复'}
                         </button>
                       )}
@@ -288,23 +326,6 @@ const App: React.FC = () => {
                       </button>
                     </div>
                   </div>
-                  
-                  {file.status === FileStatus.FIXED && (
-                    <div className="px-4 pb-4">
-                      <div className="bg-slate-900 rounded-xl p-3 text-[11px] font-mono text-slate-300 overflow-hidden relative group">
-                        <div className="absolute top-2 right-3 text-[9px] uppercase tracking-widest text-slate-500 font-sans">预览内容</div>
-                        <div className="whitespace-pre-wrap line-clamp-2">
-                          {file.fixedContent.substring(0, 200)}
-                        </div>
-                        {isLikelyGarbled(file.fixedContent) && (
-                          <div className="mt-2 flex items-center gap-1.5 text-amber-400 text-[10px]">
-                            <AlertCircle className="w-3 h-3" />
-                            <span>仍有异常，请尝试手动切换编码或调整简体开关。</span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
                 </div>
               ))}
             </div>
@@ -314,25 +335,25 @@ const App: React.FC = () => {
         {files.length === 0 && (
           <div className="grid md:grid-cols-3 gap-6 mt-6">
             <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm transition-transform hover:-translate-y-1">
+              <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center mb-4 text-blue-600">
+                <FolderOpen className="w-5 h-5" />
+              </div>
+              <h4 className="font-bold text-slate-800 mb-2">目录结构保留</h4>
+              <p className="text-xs text-slate-500 leading-relaxed">直接拖入整个文件夹。下载时会自动还原原有的多级文件夹结构，方便音乐管理。</p>
+            </div>
+            <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm transition-transform hover:-translate-y-1">
               <div className="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center mb-4 text-indigo-600">
                 <Languages className="w-5 h-5" />
               </div>
               <h4 className="font-bold text-slate-800 mb-2">繁简转换</h4>
-              <p className="text-xs text-slate-500 leading-relaxed">内置 OpenCC 引擎，支持将繁体歌名和艺术家自动规范化为简体。</p>
-            </div>
-            <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm transition-transform hover:-translate-y-1">
-              <div className="w-10 h-10 bg-amber-50 rounded-xl flex items-center justify-center mb-4 text-amber-600">
-                <ShieldCheck className="w-5 h-5" />
-              </div>
-              <h4 className="font-bold text-slate-800 mb-2">UTF-8 BOM</h4>
-              <p className="text-xs text-slate-500 leading-relaxed">自动添加 BOM 标记，这是 Foobar2000 识别 UTF-8 的唯一黄金标准。</p>
+              <p className="text-xs text-slate-500 leading-relaxed">修复乱码的同时，可自动将港台繁体歌名转换为简体，适配播放器显示。</p>
             </div>
             <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm transition-transform hover:-translate-y-1">
               <div className="w-10 h-10 bg-emerald-50 rounded-xl flex items-center justify-center mb-4 text-emerald-600">
-                <CheckCircle2 className="w-5 h-5" />
+                <Archive className="w-5 h-5" />
               </div>
-              <h4 className="font-bold text-slate-800 mb-2">极速打包</h4>
-              <p className="text-xs text-slate-500 leading-relaxed">无论 10 个还是 100 个文件，瞬间生成 ZIP 压缩包，即下即用。</p>
+              <h4 className="font-bold text-slate-800 mb-2">打包下载</h4>
+              <p className="text-xs text-slate-500 leading-relaxed">不再受限于浏览器单次下载限制。所有修复文件打包为一个 ZIP，一次性快速获取。</p>
             </div>
           </div>
         )}
@@ -340,7 +361,7 @@ const App: React.FC = () => {
 
       <footer className="mt-auto py-8 text-slate-400 text-[10px] tracking-widest uppercase flex items-center gap-2">
         <div className="w-1 h-1 bg-slate-300 rounded-full"></div>
-        <p>纯前端处理 • OpenCC 集成 • 保护隐私</p>
+        <p>目录保持 • 纯前端处理 • 批量下载</p>
         <div className="w-1 h-1 bg-slate-300 rounded-full"></div>
       </footer>
     </div>

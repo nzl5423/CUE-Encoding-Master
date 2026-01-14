@@ -2,14 +2,15 @@
 import { GoogleGenAI, Type } from "@google/genai";
 
 export class GeminiService {
-  private ai: GoogleGenAI;
-
-  constructor() {
-    this.ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  }
-
+  /**
+   * Analyzes a garbled text snippet to identify its original encoding.
+   * Following the SDK guidelines, we instantiate GoogleGenAI right before the API call
+   * and use the .text property of the response.
+   */
   async analyzeGarbledText(textSnippet: string): Promise<{ encoding: string; cleanedText: string }> {
-    const response = await this.ai.models.generateContent({
+    // DO: Create a new GoogleGenAI instance right before making an API call.
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: `
         You are a character encoding expert. I have a music CUE file that appears garbled (Mojibake).
@@ -47,6 +48,7 @@ export class GeminiService {
     });
 
     try {
+      // DO: Access the .text property directly (not as a function).
       const text = response.text || '{}';
       return JSON.parse(text);
     } catch (e) {
