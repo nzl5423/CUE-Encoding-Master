@@ -20,11 +20,11 @@ export interface CueFile {
 }
 
 export const SUPPORTED_ENCODINGS = [
-  { label: 'Auto (Gemini)', value: 'auto' },
-  { label: 'Simplified Chinese (GBK)', value: 'gbk' },
-  { label: 'Traditional Chinese (Big5)', value: 'big5' },
-  { label: 'Japanese (Shift-JIS)', value: 'shift-jis' },
-  { label: 'Korean (EUC-KR)', value: 'euc-kr' },
-  { label: 'UTF-8', value: 'utf-8' },
-  { label: 'Windows-1252 (Western)', value: 'windows-1252' }
+  { label: '自动识别 (本地)', value: 'auto' },
+  { label: '简体中文 (GB18030)', value: 'gb18030' },
+  { label: '繁体中文 (Big5)', value: 'big5' },
+  { label: '日文 (Shift-JIS)', value: 'shift-jis' },
+  { label: '韩文 (EUC-KR)', value: 'euc-kr' },
+  { label: '西欧 (Windows-1252)', value: 'windows-1252' },
+  { label: 'UTF-8', value: 'utf-8' }
 ];
