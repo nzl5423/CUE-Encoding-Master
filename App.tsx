@@ -11,17 +11,19 @@ import {
   AlertCircle,
   ChevronDown,
   Archive,
-  CheckCircle2
+  CheckCircle2,
+  Languages
 } from 'lucide-react';
 import JSZip from 'jszip';
 import { CueFile, FileStatus, SUPPORTED_ENCODINGS } from './types';
-import { decodeBuffer, isLikelyGarbled, downloadFile, autoDetectEncoding } from './utils/encodingUtils';
+import { decodeBuffer, isLikelyGarbled, downloadFile, autoDetectEncoding, t2s } from './utils/encodingUtils';
 
 const App: React.FC = () => {
   const [files, setFiles] = useState<CueFile[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [shouldConvertToSimplified, setShouldConvertToSimplified] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const processFiles = async (selectedFiles: File[]) => {
@@ -56,14 +58,13 @@ const App: React.FC = () => {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const fixFile = async (fileId: string, manualEncoding?: string) => {
+  const fixFile = async (fileId: string, manualEncoding?: string, forceConversion?: boolean) => {
     setFiles(prev => prev.map(f => f.id === fileId ? { ...f, status: FileStatus.PROCESSING } : f));
     
     const file = files.find(f => f.id === fileId);
     if (!file) return;
 
-    // Simulate small delay for UI feedback
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise(r => setTimeout(r, 50)); // Feedback delay
 
     try {
       let result;
@@ -76,9 +77,16 @@ const App: React.FC = () => {
         result = autoDetectEncoding(file.originalRaw);
       }
 
+      // Handle conversion if enabled
+      let finalText = result.text;
+      const doConvert = forceConversion !== undefined ? forceConversion : shouldConvertToSimplified;
+      if (doConvert) {
+        finalText = t2s(finalText);
+      }
+
       setFiles(prev => prev.map(f => f.id === fileId ? { 
         ...f, 
-        fixedContent: result.text, 
+        fixedContent: finalText, 
         detectedEncoding: result.encoding,
         status: FileStatus.FIXED 
       } : f));
@@ -99,7 +107,6 @@ const App: React.FC = () => {
   const fixAll = async () => {
     setIsProcessing(true);
     const pendingFiles = files.filter(f => f.status !== FileStatus.FIXED);
-    // Process in chunks or sequentially for UI smoothness
     for (const file of pendingFiles) {
       await fixFile(file.id);
     }
@@ -129,7 +136,7 @@ const App: React.FC = () => {
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `Fixed_CUE_${new Date().toISOString().slice(0,10)}.zip`;
+      link.download = `Fixed_CUE_Simplified_${new Date().toISOString().slice(0,10)}.zip`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -151,7 +158,7 @@ const App: React.FC = () => {
           <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">CUE 编码助手</h1>
         </div>
         <p className="text-slate-500 max-w-2xl mx-auto">
-          本地极速修复乱码。采用智能启发式算法自动探测编码，支持一键打包下载。
+          本地极速修复乱码。现已集成 <b>OpenCC</b>，支持繁体自动转简体，完美兼容 Foobar2000。
         </p>
       </header>
 
@@ -174,16 +181,37 @@ const App: React.FC = () => {
           <div className="flex flex-col items-center text-center">
             <Upload className={`w-10 h-10 mb-3 ${isDragging ? 'text-indigo-600' : 'text-slate-400'}`} />
             <h3 className="text-lg font-semibold text-slate-700">拖入 CUE 文件</h3>
-            <p className="text-sm text-slate-400 font-medium">100% 离线处理，保障隐私安全</p>
+            <p className="text-sm text-slate-400 font-medium">支持批量转换，处理不设限</p>
           </div>
         </section>
 
         {files.length > 0 && (
           <>
-            <div className="flex justify-between items-center bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
-              <span className="text-sm font-medium text-slate-500">{files.length} 个文件待处理</span>
+            <div className="flex flex-wrap gap-4 justify-between items-center bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+              <div className="flex items-center space-x-4">
+                <span className="text-sm font-medium text-slate-500">{files.length} 个文件就绪</span>
+                <div className="h-6 w-px bg-slate-200"></div>
+                {/* Simplified Conversion Toggle */}
+                <label className="flex items-center cursor-pointer group">
+                  <div className="relative">
+                    <input 
+                      type="checkbox" 
+                      className="hidden" 
+                      checked={shouldConvertToSimplified} 
+                      onChange={(e) => setShouldConvertToSimplified(e.target.checked)} 
+                    />
+                    <div className={`w-10 h-5 rounded-full shadow-inner transition-colors ${shouldConvertToSimplified ? 'bg-indigo-600' : 'bg-slate-300'}`}></div>
+                    <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transform transition-transform ${shouldConvertToSimplified ? 'translate-x-5' : 'translate-x-0'}`}></div>
+                  </div>
+                  <div className="ml-2 text-xs font-semibold text-slate-600 group-hover:text-indigo-600 transition-colors flex items-center gap-1">
+                    <Languages className="w-3.5 h-3.5" />
+                    自动转简体
+                  </div>
+                </label>
+              </div>
+
               <div className="flex gap-2">
-                <button onClick={() => setFiles([])} className="text-sm text-slate-400 hover:text-red-500 px-3 py-2 transition-colors">清空</button>
+                <button onClick={() => setFiles([])} className="text-sm text-slate-400 hover:text-red-500 px-3 py-2 transition-colors">清空列表</button>
                 <button 
                   onClick={fixAll}
                   disabled={isProcessing}
@@ -215,9 +243,16 @@ const App: React.FC = () => {
                         <h4 className="font-bold text-slate-800 truncate">{file.name}</h4>
                         <div className="flex items-center gap-2 mt-1">
                           {file.status === FileStatus.FIXED ? (
-                            <span className="text-[10px] font-bold uppercase tracking-wider bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-md flex items-center gap-1">
-                              <ShieldCheck className="w-3 h-3" /> {file.detectedEncoding}
-                            </span>
+                            <div className="flex gap-1.5">
+                              <span className="text-[10px] font-bold uppercase tracking-wider bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-md flex items-center gap-1">
+                                <ShieldCheck className="w-3 h-3" /> {file.detectedEncoding}
+                              </span>
+                              {shouldConvertToSimplified && (
+                                <span className="text-[10px] font-bold uppercase tracking-wider bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-md">
+                                  已转简体
+                                </span>
+                              )}
+                            </div>
                           ) : (
                             <span className="text-[10px] text-slate-400 uppercase tracking-widest">等待修复</span>
                           )}
@@ -257,14 +292,14 @@ const App: React.FC = () => {
                   {file.status === FileStatus.FIXED && (
                     <div className="px-4 pb-4">
                       <div className="bg-slate-900 rounded-xl p-3 text-[11px] font-mono text-slate-300 overflow-hidden relative group">
-                        <div className="absolute top-2 right-3 text-[9px] uppercase tracking-widest text-slate-500 font-sans">内容预览</div>
+                        <div className="absolute top-2 right-3 text-[9px] uppercase tracking-widest text-slate-500 font-sans">预览内容</div>
                         <div className="whitespace-pre-wrap line-clamp-2">
                           {file.fixedContent.substring(0, 200)}
                         </div>
                         {isLikelyGarbled(file.fixedContent) && (
                           <div className="mt-2 flex items-center gap-1.5 text-amber-400 text-[10px]">
                             <AlertCircle className="w-3 h-3" />
-                            <span>自动识别可能不准确，请尝试手动切换编码。</span>
+                            <span>仍有异常，请尝试手动切换编码或调整简体开关。</span>
                           </div>
                         )}
                       </div>
@@ -278,33 +313,35 @@ const App: React.FC = () => {
 
         {files.length === 0 && (
           <div className="grid md:grid-cols-3 gap-6 mt-6">
-            <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
+            <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm transition-transform hover:-translate-y-1">
               <div className="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center mb-4 text-indigo-600">
-                <Zap className="w-5 h-5" />
+                <Languages className="w-5 h-5" />
               </div>
-              <h4 className="font-bold text-slate-800 mb-2">本地修复</h4>
-              <p className="text-xs text-slate-500 leading-relaxed">无需联网，利用浏览器 TextDecoder API 实现极速编码转换。</p>
+              <h4 className="font-bold text-slate-800 mb-2">繁简转换</h4>
+              <p className="text-xs text-slate-500 leading-relaxed">内置 OpenCC 引擎，支持将繁体歌名和艺术家自动规范化为简体。</p>
             </div>
-            <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
+            <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm transition-transform hover:-translate-y-1">
               <div className="w-10 h-10 bg-amber-50 rounded-xl flex items-center justify-center mb-4 text-amber-600">
                 <ShieldCheck className="w-5 h-5" />
               </div>
               <h4 className="font-bold text-slate-800 mb-2">UTF-8 BOM</h4>
-              <p className="text-xs text-slate-500 leading-relaxed">自动添加字节顺序标记（BOM），确保 Foobar2000 完美识别。</p>
+              <p className="text-xs text-slate-500 leading-relaxed">自动添加 BOM 标记，这是 Foobar2000 识别 UTF-8 的唯一黄金标准。</p>
             </div>
-            <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
+            <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm transition-transform hover:-translate-y-1">
               <div className="w-10 h-10 bg-emerald-50 rounded-xl flex items-center justify-center mb-4 text-emerald-600">
                 <CheckCircle2 className="w-5 h-5" />
               </div>
-              <h4 className="font-bold text-slate-800 mb-2">批量打包</h4>
-              <p className="text-xs text-slate-500 leading-relaxed">一键生成 ZIP 压缩包，解决浏览器单次下载文件过多的限制。</p>
+              <h4 className="font-bold text-slate-800 mb-2">极速打包</h4>
+              <p className="text-xs text-slate-500 leading-relaxed">无论 10 个还是 100 个文件，瞬间生成 ZIP 压缩包，即下即用。</p>
             </div>
           </div>
         )}
       </main>
 
-      <footer className="mt-auto py-8 text-slate-400 text-[10px] tracking-widest uppercase">
-        <p>© 2024 CUE Master • 纯前端离线版</p>
+      <footer className="mt-auto py-8 text-slate-400 text-[10px] tracking-widest uppercase flex items-center gap-2">
+        <div className="w-1 h-1 bg-slate-300 rounded-full"></div>
+        <p>纯前端处理 • OpenCC 集成 • 保护隐私</p>
+        <div className="w-1 h-1 bg-slate-300 rounded-full"></div>
       </footer>
     </div>
   );
