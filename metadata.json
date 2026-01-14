@@ -1,0 +1,5 @@
+{
+  "name": "CUE Encoding Master",
+  "description": "A specialized tool to batch repair garbled text in CUE files for Foobar2000 and other players by converting legacy encodings (GBK, Big5, Shift-JIS) to clean UTF-8.",
+  "requestFramePermissions": []
+}
